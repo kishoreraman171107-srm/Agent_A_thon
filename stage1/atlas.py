@@ -135,18 +135,15 @@ class StudyGraph:
     Alongside Protocol and Laboratory Rules.
     """
 
-    def __init__(self, data_dir: str):
-        self.data_dir = os.path.abspath(data_dir)
-        self.doc_dir = os.path.join(os.path.dirname(self.data_dir), "documents")
-        if not os.path.exists(self.doc_dir):
-            self.doc_dir = os.path.join(self.data_dir, "documents")
 
-        # Master stores
-        self.reference_ranges: Dict[Tuple[str, str], dict] = {}  # (LBTESTCD, LAB) -> dict
-        self.central_ranges: Dict[str, dict] = {}                # LBTESTCD -> dict
+    def __init__(self, data_dir: str = "data", doc_dir: str = "documents"):
+        self.data_dir = data_dir
+        self.doc_dir = doc_dir
         
-        # Deduplicated subjects
-        self.subjects: Dict[str, dict] = {}                      # USUBJID -> DM dict
+        # Base Data
+        self.subjects: Dict[str, dict] = {}                      # USUBJID -> demog dict
+        self.reference_ranges: Dict[str, dict] = {}              # (LAB, TESTCD) -> {LOW, HIGH, UNIT}
+        self.central_ranges: Dict[str, dict] = {}                # TESTCD -> {LOW, HIGH, UNIT}
         self.subject_sites: Dict[str, str] = {}                  # USUBJID -> SITEID
         self.site_subjects: Dict[str, Set[str]] = defaultdict(set) # SITEID -> set of USUBJID
         
@@ -169,20 +166,58 @@ class StudyGraph:
         self.protocol_rules: Dict[str, Any] = {}
         self.documents_text: Dict[str, str] = {}
         self.cut: Optional[int] = None
+        
+        # Corrections index: domain -> usubjid -> seq -> field -> new_value
+
+        self.corrections = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+        
+        self.monitor_decisions = {}
+        try:
+            import json
+            dec_path = os.path.join(os.path.dirname(self.data_dir), "responses", "monitor_decisions.json")
+            if os.path.exists(dec_path):
+                with open(dec_path, "r", encoding="utf-8") as f:
+                    self.monitor_decisions = json.load(f).get("decisions", {})
+        except Exception:
+            pass
 
         # Build stats
+
         self.node_count = 0
         self.edge_count = 0
         self.build_ms = 0
 
+
     def _read_csv(self, filename: str) -> List[dict]:
         path = os.path.join(self.data_dir, filename)
+        # Try both cases on non-Windows if needed
         if not os.path.exists(path):
-            return []
+            path = os.path.join(self.data_dir, filename.upper())
+            if not os.path.exists(path):
+                return []
+        
         rows = []
+        domain = filename.upper().replace(".CSV", "")
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             reader = csv.DictReader(f)
             for r in reader:
+                # Filter by cut_available
+                cut_avail = r.get("cut_available", "")
+                if self.cut is not None and cut_avail.isdigit():
+                    if int(cut_avail) > self.cut:
+                        continue
+                
+                # Apply corrections if applicable
+                uid = r.get("USUBJID", "")
+                seq_str = r.get(f"{domain}SEQ", "")
+                if not seq_str and domain == "DM":
+                    seq_str = "0"
+                if uid and seq_str.isdigit():
+                    seq = int(seq_str)
+                    if domain in self.corrections and uid in self.corrections[domain] and seq in self.corrections[domain][uid]:
+                        for field, new_val in self.corrections[domain][uid][seq].items():
+                            r[field] = new_val
+                
                 # Clean leading/trailing spaces
                 clean_r = {k.strip(): (v.strip() if v else "") for k, v in r.items() if k}
                 rows.append(clean_r)
@@ -211,13 +246,45 @@ class StudyGraph:
                         if self.cut == 2:
                             self.hys_law_window_days = 21
 
+
     def build(self, cut: Optional[int] = None) -> dict:
         """
         Builds or rebuilds the Knowledge Graph.
         Re-reads the world dynamically to guarantee resilience after mid-stage study changes.
         """
         start_time = time.perf_counter()
+        
+        # Determine active cut and protocol version
         self.cut = cut
+        protocol_version = 1
+        cuts_path = os.path.join(self.data_dir, "cuts.csv")
+        if os.path.exists(cuts_path):
+            with open(cuts_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                max_cut = 0
+                for r in reader:
+                    c = int(r["cut"])
+                    max_cut = max(max_cut, c)
+                    if cut is not None and c == cut:
+                        protocol_version = int(r["protocol_version"])
+                if cut is None:
+                    self.cut = max_cut
+                    
+        # Load corrections
+        self.corrections.clear()
+        corr_path = os.path.join(self.data_dir, "corrections.csv")
+        if os.path.exists(corr_path):
+            with open(corr_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    c_cut = int(r["cut"])
+                    if self.cut is not None and self.cut >= c_cut:
+                        dom = r["domain"].upper()
+                        uid = r["usubjid"]
+                        seq = int(r["seq"])
+                        field = r["field"]
+                        new_val = r["new_value"]
+                        self.corrections[dom][uid][seq][field] = new_val
 
         # Clear existing indexes
         self.reference_ranges.clear()
@@ -804,16 +871,38 @@ class Atlas:
                 if subject_qualified:
                     break
 
-        narrative = f"{len(candidates)} Hy's law candidates. " + " ".join(details)
+
+        final_candidates = []
+        final_evidence = []
+        final_details = []
+
+        for i, uid in enumerate(candidates):
+            ev_1 = evidence_refs[2 * i]
+            ev_2 = evidence_refs[2 * i + 1]
+            detail = details[i]
+            
+            # Check medical monitor
+            key = f"HYS_LAW_CANDIDATE|{uid}"
+            decision = self.graph.monitor_decisions.get(key, ["APPROVED", ""])[0]
+            
+            if decision == "REJECTED":
+                continue
+            
+            final_candidates.append(uid)
+            final_evidence.extend([ev_1, ev_2])
+            final_details.append(detail)
+
+        narrative = f"{len(final_candidates)} Hy's law candidates. " + " ".join(final_details)
         return Answer(
             question_id=q_id,
-            answer=candidates,
+            answer=final_candidates,
             text=narrative,
-            evidence=evidence_refs,
+            evidence=final_evidence,
             confidence=0.90,
             steps_used=6,
             tokens_used=0
         )
+
 
     def _evaluate_elevated_enzymes(self, q_id: str, multiplier: float = 3.0) -> Answer:
         g = self.graph

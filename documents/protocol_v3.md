@@ -1,4 +1,4 @@
-# STUDY-042 Clinical Study Protocol — Version 1
+# STUDY-042 Clinical Study Protocol — Version 3
 
 ## 1. Objectives
 Evaluate efficacy (HbA1c change from baseline at Week 24) and safety of DRUG-042 versus placebo in adults with type 2 diabetes and elevated cardiovascular risk.
@@ -11,12 +11,14 @@ Evaluate efficacy (HbA1c change from baseline at Week 24) and safety of DRUG-042
 ## 3. Exclusion criteria
 - Known hepatic disease (ALT or AST > 2 × ULN at screening)
 - Pregnancy
+- Creatinine > 1.5 mg/dL at screening (renal impairment) — ADDED IN AMENDMENT 2
 
 ## 4. Visit schedule and windows
 Screening (Day −14), Baseline (Day 0), Weeks 2, 4, 8, 12, 16, 20, 24, End of Study (Day 182).
-Visit window: ± 7 days from the scheduled day. Visits outside the window are protocol deviations and must be logged.
+Visit window: ± 3 days from the scheduled day. Visits outside the window are protocol deviations and must be logged.
 
 ## 5. Prohibited concomitant medications
+- Sulfonylurea
 - Systemic Glucocorticoid
 Use of a prohibited medication during the study is a protocol deviation and must be reported to the medical monitor.
 
